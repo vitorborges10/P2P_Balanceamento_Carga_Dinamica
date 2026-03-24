@@ -48,7 +48,7 @@ Um nó **Master** gerencia múltiplos **Workers**, distribuindo tarefas e monito
 ### 🔄 HEARTBEAT
 
 **Requisição (Worker → Master)**
-```json
+json
 {"SERVER_UUID": "Rafael", "TASK": "HEARTBEAT"}
 
 Resposta (Master → Worker)
