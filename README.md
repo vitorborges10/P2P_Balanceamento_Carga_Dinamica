@@ -19,9 +19,9 @@ Um nó **Master** gerencia múltiplos **Workers**, distribuindo tarefas e monito
 ---
 
 ## 🏗️ Estrutura do Projeto
-  ├── server.py
-  ├── client.py
-  └── README.md
+  ├── server.py /n
+  ├── client.py /n
+  └── README.md /n
 
 
 ---
