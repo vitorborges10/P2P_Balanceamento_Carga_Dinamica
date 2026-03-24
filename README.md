@@ -3,6 +3,15 @@
 **Disciplina:** Arquitetura de Sistemas Distribuídos  
 **Professor:** Michel Junio Ferreira Rosa  
 
+**Alunos:**  
+- Vitor de Assis Patricio Borges  
+  - RA: 22304737  
+  - GitHub: vitorborges10  
+
+- Rafael Furtado Guimarães Estevão  
+  - RA: 22305974  
+  - GitHub: Kayarf  
+
 ---
 
 ## 📌 Status
@@ -19,10 +28,13 @@ Um nó **Master** gerencia múltiplos **Workers**, distribuindo tarefas e monito
 ---
 
 ## 🏗️ Estrutura do Projeto
-  ├── server.py 
-  ├── client.py 
-  └── README.md 
 
+```
+.
+├── server.py
+├── client.py
+└── README.md
+```
 
 ---
 
@@ -48,21 +60,33 @@ Um nó **Master** gerencia múltiplos **Workers**, distribuindo tarefas e monito
 ### 🔄 HEARTBEAT
 
 **Requisição (Worker → Master)**
-json
+
+```json
 {"SERVER_UUID": "Rafael", "TASK": "HEARTBEAT"}
+```
 
-Resposta (Master → Worker)
+**Resposta (Master → Worker)**
 
+```json
 {"SERVER_UUID": "Master_Alpha", "TASK": "HEARTBEAT", "RESPONSE": "ALIVE"}
+```
+
+---
 
 ## ⚙️ Configuração
 
-Antes de executar o Worker, configure o IP do Master no arquivo client.py:
+Antes de executar o Worker, configure o IP do Master no arquivo `client.py`:
+
+```python
 DEST_IP = '127.0.0.1'
+```
+
+---
 
 ## 🔁 Fluxo de Comunicação
-Worker conecta ao Master via TCP
-Envia mensagem JSON com delimitador \n
-Master realiza parsing da mensagem
-Master responde com "ALIVE"
-Worker exibe o resultado no terminal
+
+1. Worker conecta ao Master via TCP  
+2. Envia mensagem JSON com delimitador `\n`  
+3. Master realiza parsing da mensagem  
+4. Master responde com `"ALIVE"`  
+5. Worker exibe o resultado no terminal  
