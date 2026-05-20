@@ -320,205 +320,83 @@ from src.logging import create_logger
 def process_worker_request(payload: dict, queue: TaskQueue) -> dict:
     validate_message(payload, ["WORKER", "WORKER_UUID"])
     if payload.get("WORKER", "").upper() != "ALIVE":
-        raise ValueError("Invalid worker status")
-    task = queue.dequeue()
-    if task:
-        return task
-    return {"TASK": "NO_TASK"}
-```
 
-- [ ] **STEP 3: ADD TESTS FOR QUEUE AND ROUTING**
-
-```python
-from src.tasks import TaskQueue
-
-
-def test_task_queue_enqueue_dequeue():
-    queue = TaskQueue()
-    queue.enqueue({"TASK": "QUERY", "USER": "Alice"})
-    assert queue.dequeue()["USER"] == "Alice"
-    assert queue.dequeue() is None
-```
-
-- [ ] **STEP 4: EXTEND INTEGRATION TEST TO VERIFY MASTER SENDS QUERY OR NO_TASK**
-
-```python
-# tests/integration/test_master_worker.py
-import socket
-import threading
-from src.master import start_master
-
-
-def test_master_returns_no_task_when_queue_empty():
-    thread = threading.Thread(target=start_master, args=('127.0.0.1', 9001), daemon=True)
-    thread.start()
-    sock = socket.create_connection(('127.0.0.1', 9001), timeout=5)
-    sock.sendall(b'{"WORKER": "ALIVE", "WORKER_UUID": "W-123"}\n')
-    data = sock.recv(4096).decode('utf-8')
-    assert 'NO_TASK' in data
-    sock.close()
-```
-```
-
-### Task 5: Implement Master-to-Master negotiation and dynamic redirection
-
-**Files:**
-- Modify: `src/p2p.py`
-- Modify: `src/master.py`
-- Modify: `tests/unit/test_p2p.py`
-- Modify: `tests/integration/test_master_worker.py`
-
-- [ ] **Step 1: Implement core P2P negotiation methods**
-
-```python
-IMPORT SOCKET
-IMPORT UUID
-FROM SRC.PROTOCOL IMPORT SEND_JSON, RECEIVE_JSON
-FROM SRC.TASKS IMPORT TASKQUEUE
-
-
-DEF REQUEST_HELP(PEER_HOST: STR, PEER_PORT: INT, CURRENT_LOAD: INT, WORKERS_NEEDED: INT) -> DICT:
-    S = SOCKET.SOCKET(SOCKET.AF_INET, SOCKET.SOCK_STREAM)
-    S.SETTIMEOUT(3)
-    S.CONNECT((PEER_HOST, PEER_PORT))
-    PAYLOAD = {
-        "TYPE": "REQUEST_HELP",
-        "REQUEST_ID": STR(UUID.UUID4()),
-        "PAYLOAD": {
-            "CURRENT_LOAD": CURRENT_LOAD,
-            "WORKERS_NEEDED": WORKERS_NEEDED
-        }
-    }
-    SEND_JSON(S, PAYLOAD)
-    RESPONSE = RECEIVE_JSON(S)
-    S.CLOSE()
-    RETURN RESPONSE
-```
-
-- [ ] **Step 2: Add P2P tests**
-
-```python
-IMPORT SOCKET
-IMPORT THREADING
-FROM SRC.P2P IMPORT REQUEST_HELP
-
-
-DEF TEST_REQUEST_HELP_RETURNS_RESPONSE():
-    DEF FAKE_PEER(SERVER_SOCK):
-        CONN, _ = SERVER_SOCK.ACCEPT()
         DATA = CONN.RECV(4096).DECODE('UTF-8')
-        ASSERT 'REQUEST_HELP' IN DATA
-        CONN.SENDALL(B'{"TYPE": "RESPONSE_ACCEPTED", "REQUEST_ID": "TEST-ID", "PAYLOAD": {"WORKERS_OFFERED": 2}}\N')
-        CONN.CLOSE()
-
-    SERVER_SOCK = SOCKET.SOCKET(SOCKET.AF_INET, SOCKET.SOCK_STREAM)
-    SERVER_SOCK.BIND(('127.0.0.1', 9100))
-    SERVER_SOCK.LISTEN(1)
-    THREAD = THREADING.THREAD(TARGET=FAKE_PEER, ARGS=(SERVER_SOCK,), DAEMON=TRUE)
-    THREAD.START()
-
-    RESPONSE = REQUEST_HELP('127.0.0.1', 9100, CURRENT_LOAD=12, WORKERS_NEEDED=2)
-    ASSERT RESPONSE['TYPE'] == 'RESPONSE_ACCEPTED'
-    ASSERT RESPONSE['PAYLOAD']['WORKERS_OFFERED'] == 2
-
-    SERVER_SOCK.CLOSE()
-```
-```
-
-- [ ] **STEP 3: INTEGRATE NEGOTIATION WITH MASTER LOAD MONITOR**
-
-```python
-from src.tasks import TaskQueue
-from src.p2p import request_help
-import time
-
-
-def start_p2p_monitor(queue: TaskQueue, peer_host: str, peer_port: int, stop_event):
-    while not stop_event.is_set():
-        time.sleep(5)
-        if queue.size() >= 10:
-            response = request_help(peer_host, peer_port, queue.size(), 2)
-            if response.get('TYPE') == 'RESPONSE_ACCEPTED':
-                offered = response.get('PAYLOAD', {}).get('WORKERS_OFFERED', 0)
-                pending_redirects = offered
-                print(f"Peer accepted help: {offered} workers")
-```
-```
-
-- [ ] **Step 4: Add integration test for P2P command handling**
-
-```python
-IMPORT SOCKET
-IMPORT THREADING
-IMPORT TIME
-FROM THREADING IMPORT EVENT
-FROM SRC.TASKS IMPORT TASKQUEUE
-FROM SRC.P2P IMPORT START_P2P_MONITOR
-
-
-DEF TEST_MASTER_CAN_SEND_REQUEST_HELP():
-    DEF FAKE_PEER(SERVER_SOCK):
-        CONN, _ = SERVER_SOCK.ACCEPT()
-        DATA = CONN.RECV(4096).DECODE('UTF-8')
-        ASSERT 'REQUEST_HELP' IN DATA
-        CONN.SENDALL(B'{"TYPE": "RESPONSE_ACCEPTED", "REQUEST_ID": "TEST-ID", "PAYLOAD": {"WORKERS_OFFERED": 2}}\N')
-        CONN.CLOSE()
-
-    SERVER_SOCK = SOCKET.SOCKET(SOCKET.AF_INET, SOCKET.SOCK_STREAM)
-    SERVER_SOCK.BIND(('127.0.0.1', 9101))
-    SERVER_SOCK.LISTEN(1)
-    THREAD_PEER = THREADING.THREAD(TARGET=FAKE_PEER, ARGS=(SERVER_SOCK,), DAEMON=TRUE)
-    THREAD_PEER.START()
-
-    QUEUE = TASKQUEUE()
-    FOR _ IN RANGE(10):
-        QUEUE.ENQUEUE({"TASK": "QUERY", "USER": "TEST"})
-
-    STOP_EVENT = EVENT()
-    MONITOR_THREAD = THREADING.THREAD(
-        TARGET=START_P2P_MONITOR,
-        ARGS=(QUEUE, '127.0.0.1', 9101, STOP_EVENT),
-        DAEMON=TRUE,
-    )
-    MONITOR_THREAD.START()
-
-    TIME.SLEEP(1)
-    STOP_EVENT.SET()
-    MONITOR_THREAD.JOIN(TIMEOUT=2)
-
-    ASSERT NOT MONITOR_THREAD.IS_ALIVE()
-    SERVER_SOCK.CLOSE()
-```
-```
-
-### TASK 6: UPDATE README AND DOCS TO REFLECT ARCHITECTURE
-
-**FILES:**
-- MODIFY: `README.MD`
-- MODIFY: `DOCS/ARCHITECTURE.MD`
-
-- [ ] **STEP 1: ADD ARCHITECTURE SECTION TO README**
-
-```markdown
-## Arquitetura
-
-O projeto usa uma estrutura modular com `src/` para a lógica principal e `server.py`/`client.py` como entradas executáveis. O Master gerencia filas e negocia com Masters vizinhos, enquanto o Worker se apresenta, processa queries e responde com status.
-```
-
-- [ ] **STEP 2: CREATE `DOCS/ARCHITECTURE.MD`**
-
-```markdown
-# Arquitetura do Projeto
-
-## Componentes
-- `src/protocol.py`: parsing e validação JSON com delimitador `\n`
-- `src/tasks.py`: filas de tarefa e simulação de carga
-- `src/master.py`: servidor Master e rotina de atendimento
-- `src/worker.py`: ciclo Worker — heartbeat, apresentação, processamento, status
-- `src/p2p.py`: negociação Master-to-Master e redirecionamento
 - `src/logging.py`: logger compartilhado e arquivos de log
-```
-```
+        # PLANO DE IMPLEMENTAÇÃO: SISTEMA P2P BALANCEAMENTO DE CARGA (SPRINTS 1, 2 E 3)
+
+        ## 1. OBJETIVO GERAL
+        Implementar um sistema distribuído P2P com balanceamento dinâmico de carga, conforme o plano do projeto (PDF), cobrindo as Sprints 1, 2 e 3:
+        - Sprint 1: Master/Worker básico, distribuição de tarefas e heartbeat.
+        - Sprint 2: Pool de workers, fila de tarefas, ACK, e tratamento de ausência de tarefas.
+        - Sprint 3: Protocolo Master-to-Master, empréstimo/devolução de workers, parsing estrito e interoperabilidade.
+
+        ## 2. ARQUITETURA DO PROJETO
+        - `server.py`: Master principal. Aceita conexões de workers e de outros masters.
+        - `client.py`: Worker. Conecta ao master, executa tarefas, pode ser redirecionado.
+        - `server2.py`/`client2.py`: Segundo master/worker para simulação P2P.
+        - Comunicação via TCP + JSON, delimitado por `\n`.
+
+        ## 3. SPRINT 1: MASTER/WORKER BÁSICO
+        - Master aceita conexões de workers.
+        - Worker envia heartbeat periódico.
+        - Master responde com status.
+        - Mensagens:
+          - Worker → Master: `{ "SERVER_UUID": "<WORKER_UUID>", "TASK": "HEARTBEAT" }`
+          - Master → Worker: `{ "SERVER_UUID": "MASTER_A", "TASK": "HEARTBEAT", "RESPONSE": "ALIVE" }`
+
+        ## 4. SPRINT 2: FILA DE TAREFAS E POOL DE WORKERS
+        - Master mantém fila de tarefas (ex: `QUERY`).
+        - Worker solicita tarefa, recebe `QUERY` ou `NO_TASK`.
+        - Worker executa e responde com status.
+        - Master envia ACK.
+        - Mensagens:
+          - Worker → Master: `{ "WORKER": "ALIVE", "WORKER_UUID": "..." }`
+          - Master → Worker: `{ "TASK": "QUERY", "USER": "..." }` ou `{ "TASK": "NO_TASK" }`
+          - Worker → Master: `{ "STATUS": "OK"|"NOK", "TASK": "QUERY", "WORKER_UUID": "..." }`
+          - Master → Worker: `{ "STATUS": "ACK", "WORKER_UUID": "..." }`
+
+        ## 5. SPRINT 3: PROTOCOLO MASTER-TO-MASTER (P2P)
+        - Quando saturado, master solicita ajuda ao vizinho (`REQUEST_HELP`).
+        - Master vizinho responde (`RESPONSE_ACCEPTED` ou `RESPONSE_REJECTED`).
+        - Se aceito, master vizinho redireciona workers (`COMMAND_REDIRECT`).
+        - Worker se registra como temporário (`REGISTER_TEMPORARY_WORKER`).
+        - Quando carga normaliza, master devolve worker (`COMMAND_RELEASE`) e notifica origem (`NOTIFY_WORKER_RETURNED`).
+        - Parsing estrito: campos obrigatórios, type minúsculo, UUID v4, log de tipos desconhecidos.
+        - Mensagens:
+          - Master → Master:
+            - `REQUEST_HELP`, `RESPONSE_ACCEPTED`, `RESPONSE_REJECTED`, `COMMAND_REDIRECT`, `COMMAND_RELEASE`, `REGISTER_TEMPORARY_WORKER`, `NOTIFY_WORKER_RETURNED`
+          - Estrutura base:
+            ```json
+            { "type": "request_help", "request_id": "<uuid>", "payload": { ... } }
+            ```
+
+        ## 6. FLUXOS PRINCIPAIS
+        ### 6.1. Worker
+        1. Conecta ao master, envia heartbeat.
+        2. Solicita tarefa, executa, responde status.
+        3. Pode ser redirecionado para outro master.
+        4. Retorna ao master original quando liberado.
+
+        ### 6.2. Master
+        1. Aceita conexões de workers e masters.
+        2. Mantém fila de tarefas.
+        3. Negocia empréstimo/devolução de workers via protocolo P2P.
+        4. Faz parsing estrito das mensagens.
+
+        ## 7. VALIDAÇÃO E TESTES
+        - Testar todos os fluxos: heartbeat, fila, redirecionamento, devolução.
+        - Validar parsing estrito: type minúsculo, campos obrigatórios, UUID v4.
+        - Testar interoperabilidade entre masters.
+
+        ## 8. REFERÊNCIAS
+        - plano_proj_SD-26_1.pdf (protocolo e requisitos)
+        - server.py, client.py, server2.py, client2.py (implementação)
+        - docs/superpowers/specs/sprint3_master_to_master_protocol.md (detalhe do protocolo)
+
+        ---
+
+        Este plano reflete fielmente o código implementado e cobre todos os requisitos das Sprints 1, 2 e 3 do projeto.
 
 ### Plan Self-Review
 

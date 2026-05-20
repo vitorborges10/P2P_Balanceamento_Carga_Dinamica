@@ -5,7 +5,7 @@ import random
 import uuid
 
 ORIGINAL_MASTER_IP = '127.0.0.1'
-ORIGINAL_MASTER_PORT = 8000
+ORIGINAL_MASTER_PORT = 8001
 ORIGINAL_MASTER_ADDR = f"{ORIGINAL_MASTER_IP}:{ORIGINAL_MASTER_PORT}"
 
 MASTER_IP = ORIGINAL_MASTER_IP
@@ -35,12 +35,7 @@ def receber_json(sock) -> dict:
         buffer += data
         if "\n" in buffer:
             linha = buffer.split("\n")[0]
-            try:
-                payload = json.loads(linha.strip())
-            except json.JSONDecodeError as e:
-                print(f"[ERRO] JSON INVALIDO: {e}")
-                raise
-            return payload
+            return json.loads(linha.strip())
 
 def ciclo_heartbeat():
     try:
@@ -86,37 +81,12 @@ def ciclo_tarefa():
         enviar_json(s, apresentacao)
         resposta_master = receber_json(s)
 
-        # Sprint 03: parsing estrito e case sensitivity
-        msg_type = resposta_master.get("type")
-        request_id = resposta_master.get("request_id")
-        if msg_type is not None and not isinstance(msg_type, str):
-            print(f"[ERRO] CAMPO 'type' NÃO É STRING: {msg_type}")
-            s.close()
-            return
-        if msg_type is not None and msg_type != msg_type.lower():
-            print(f"[ERRO] CAMPO 'type' DEVE SER MINÚSCULO: {msg_type}")
-            s.close()
-            return
-        tipos_validos = [
-            "command_redirect", "command_release"
-        ]
-        if msg_type is not None and msg_type not in tipos_validos:
-            print(f"[PROTOCOLO] TYPE DESCONHECIDO: {msg_type}. IGNORADO.")
-            s.close()
-            return
-        # Validação de campos obrigatórios
-        if msg_type in ["command_redirect", "command_release"]:
-            for campo in ["request_id", "payload"]:
-                if campo not in resposta_master:
-                    print(f"[ERRO] FALTANDO CAMPO OBRIGATÓRIO '{campo}' EM {msg_type}")
-                    s.close()
-                    return
-
-        # Compatibilidade Sprint 02
         task_type = resposta_master.get("TASK")
-        if msg_type == "command_redirect":
+        msg_type = resposta_master.get("TYPE")
+
+        if msg_type == "COMMAND_REDIRECT":
             s.close()
-            novo_endereco = resposta_master.get("payload", {}).get("new_master_address")
+            novo_endereco = resposta_master.get("PAYLOAD", {}).get("NEW_MASTER_ADDRESS")
             if novo_endereco:
                 print(f"\n[COMANDO P2P] FUI EMPRESTADO! REDIRECIONANDO PARA {novo_endereco}...")
                 MASTER_IP, port_str = novo_endereco.split(":")
@@ -126,17 +96,20 @@ def ciclo_tarefa():
             else:
                 print("[ERRO P2P] COMANDO DE REDIRECIONAMENTO INVÁLIDO.")
             return
-        if msg_type == "command_release":
+
+        if msg_type == "COMMAND_RELEASE":
             s.close()
             print("\n[COMANDO P2P] FUI LIBERADO! RETORNANDO AO MASTER ORIGINAL.")
             MASTER_IP = ORIGINAL_MASTER_IP
             MASTER_PORT = ORIGINAL_MASTER_PORT
             SERVER_UUID_ORIGINAL = None
             return
+
         if task_type == "NO_TASK":
             s.close()
             time.sleep(TASK_POLL_INTERVAL)
             return
+
         if task_type == "QUERY":
             time.sleep(random.uniform(0.5, 1.5))
             status = "OK" if random.random() < 0.9 else "NOK"
@@ -146,6 +119,7 @@ def ciclo_tarefa():
             print(f"[OK] TAREFA '{resposta_master.get('USER')}' CONCLUÍDA. ACK: {ack.get('STATUS')}")
             s.close()
             return
+
         s.close()
     except Exception as e:
         print(f"[ERRO] FALHA NO CICLO: {e}")

@@ -6,12 +6,12 @@ import uuid
 from collections import deque
 
 HOST = '127.0.0.1'
-PORT = 8000
-SERVER_UUID = "MASTER_A"
+PORT = 8001
+SERVER_UUID = "MASTER_B"
 
 PEER_HOST = '127.0.0.1'
-PEER_PORT = 8001
-PEER_UUID = "MASTER_B"
+PEER_PORT = 8000
+PEER_UUID = "MASTER_A"
 
 fila_lock = threading.Lock()
 fila_tarefas: deque = deque()
