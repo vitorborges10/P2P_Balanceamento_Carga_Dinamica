@@ -1,0 +1,528 @@
+# P2P BALANCEAMENTO DE CARGA IMPLEMENTATION PLAN
+
+> **FOR AGENTIC WORKERS:** REQUIRED SUB-SKILL: USE SUPERPOWERS:SUBAGENT-DRIVEN-DEVELOPMENT (RECOMMENDED) OR SUPERPOWERS:EXECUTING-PLANS TO IMPLEMENT THIS PLAN TASK-BY-TASK. STEPS USE CHECKBOX (`- [ ]`) SYNTAX FOR TRACKING.
+
+**GOAL:** REFATORAR O PROJETO ATUAL PARA UMA ARQUITETURA PROFISSIONAL COM `SRC/` MODULAR, MANTENDO `SERVER.PY` E `CLIENT.PY` COMO ENTRADAS EXECUTÁVEIS, E ADICIONAR TESTES E DOCUMENTAÇÃO ADEQUADAS.
+
+**ARCHITECTURE:** O PROJETO SERÁ REORGANIZADO EM MÓDULOS CLAROS: PROTOCOLO JSON, LÓGICA DE TAREFAS, COMUNICAÇÃO MASTER-TO-MASTER, E LOGGING. AS ENTRADAS DE EXECUÇÃO NO ROOT PERMANECERÃO MÍNIMAS, ENQUANTO A LÓGICA PRINCIPAL FICARÁ EM `SRC/`.
+
+**TECH STACK:** PYTHON 3.11+, TCP SOCKETS, JSON, THREADING, PYTEST.
+
+---
+
+### TASK 1: CREATE REPOSITORY STRUCTURE AND ROOT ENTRY WRAPPERS
+
+**FILES:**
+- CREATE: `SRC/PROTOCOL.PY`
+- CREATE: `SRC/TASKS.PY`
+- CREATE: `SRC/P2P.PY`
+- CREATE: `SRC/LOGGING.PY`
+- CREATE: `SRC/MASTER.PY`
+- CREATE: `SRC/WORKER.PY`
+- CREATE: `TESTS/UNIT/TEST_PROTOCOL.PY`
+- CREATE: `TESTS/INTEGRATION/TEST_MASTER_WORKER.PY`
+- CREATE: `LOGS/.GITKEEP`
+- MODIFY: `SERVER.PY`
+- MODIFY: `CLIENT.PY`
+
+- [ ] **STEP 1: CREATE BASIC PACKAGE AND DIRECTORIES**
+
+```bash
+mkdir src tests tests/unit tests/integration docs docs/superpowers/plans logs
+```
+
+- [ ] **STEP 2: CREATE MINIMAL `SRC/MASTER.PY`**
+
+```python
+from src.protocol import receive_json, send_json
+from src.tasks import TaskQueue, simulate_load_generator
+from src.p2p import start_p2p_monitor
+from src.logging import create_logger
+import socket
+import threading
+
+logger = create_logger('master')
+
+def start_master(host: str, port: int):
+    queue = TaskQueue()
+    threading.Thread(target=simulate_load_generator, args=(queue,), daemon=True).start()
+    threading.Thread(target=start_p2p_monitor, args=(queue,), daemon=True).start()
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((host, port))
+    s.listen(100)
+    logger.info(f"Master listening on {host}:{port}")
+
+    while True:
+        conn, addr = s.accept()
+        threading.Thread(target=handle_connection, args=(conn, addr, queue), daemon=True).start()
+
+
+def handle_connection(conn: socket.socket, addr, queue):
+    try:
+        payload = receive_json(conn)
+        logger.info(f"Received from {addr}: {payload}")
+    finally:
+        conn.close()
+```
+```
+
+- [ ] **Step 3: Create minimal `src/worker.py`**
+
+```python
+FROM SRC.PROTOCOL IMPORT RECEIVE_JSON, SEND_JSON
+FROM SRC.LOGGING IMPORT CREATE_LOGGER
+IMPORT SOCKET
+IMPORT TIME
+IMPORT UUID
+
+LOGGER = CREATE_LOGGER('WORKER')
+
+WORKER_UUID = STR(UUID.UUID4())[:8].UPPER()
+
+DEF START_WORKER(MASTER_IP: STR, MASTER_PORT: INT):
+    WHILE TRUE:
+        TRY:
+            S = SOCKET.SOCKET(SOCKET.AF_INET, SOCKET.SOCK_STREAM)
+            S.SETTIMEOUT(5)
+            S.CONNECT((MASTER_IP, MASTER_PORT))
+            SEND_JSON(S, {"SERVER_UUID": WORKER_UUID, "TASK": "HEARTBEAT"})
+            RESPONSE = RECEIVE_JSON(S)
+            LOGGER.INFO(F"HEARTBEAT RESPONSE: {RESPONSE}")
+            S.CLOSE()
+        EXCEPT EXCEPTION AS EXC:
+            LOGGER.ERROR(F"HEARTBEAT FAILED: {EXC}")
+        TIME.SLEEP(10)
+```
+```
+
+- [ ] **STEP 4: CREATE `SERVER.PY` ENTRY WRAPPER**
+
+```python
+from src.master import start_master
+
+if __name__ == "__main__":
+    start_master('127.0.0.1', 8000)
+```
+```
+
+- [ ] **Step 5: Create `client.py` entry wrapper**
+
+```python
+FROM SRC.WORKER IMPORT START_WORKER
+
+IF __NAME__ == "__MAIN__":
+    START_WORKER('127.0.0.1', 8000)
+```
+```
+
+- [ ] **STEP 6: CREATE PLACEHOLDER TEST FILES**
+
+```python
+# tests/unit/test_protocol.py
+from src.protocol import parse_message
+
+
+def test_parse_message_accepts_valid_json():
+    payload = parse_message('{"TASK": "HEARTBEAT"}\n')
+    assert payload["TASK"] == "HEARTBEAT"
+```
+
+```python
+# tests/integration/test_master_worker.py
+import socket
+import threading
+from src.master import start_master
+
+
+def test_master_accepts_heartbeat_connection():
+    server_thread = threading.Thread(target=start_master, args=('127.0.0.1', 9000), daemon=True)
+    server_thread.start()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(('127.0.0.1', 9000))
+    sock.close()
+```
+```
+
+### Task 2: Implement protocol parsing and validation
+
+**Files:**
+- Modify: `src/protocol.py`
+- Modify: `tests/unit/test_protocol.py`
+
+- [ ] **Step 1: Implement `send_json`, `receive_json`, `parse_message`, and `validate_message`**
+
+```python
+IMPORT JSON
+IMPORT SOCKET
+FROM TYPING IMPORT ANY, DICT
+
+
+DEF SEND_JSON(SOCK: SOCKET.SOCKET, PAYLOAD: DICT[STR, ANY]):
+    SOCK.SENDALL((JSON.DUMPS(PAYLOAD) + "\N").ENCODE('UTF-8'))
+
+
+DEF RECEIVE_JSON(SOCK: SOCKET.SOCKET) -> DICT[STR, ANY]:
+    BUFFER = ""
+    WHILE TRUE:
+        DATA = SOCK.RECV(4096).DECODE('UTF-8')
+        IF NOT DATA:
+            RAISE CONNECTIONERROR("CONNECTION CLOSED")
+        BUFFER += DATA
+        IF "\N" IN BUFFER:
+            LINE, REST = BUFFER.SPLIT("\N", 1)
+            RETURN PARSE_MESSAGE(LINE + "\N")
+
+
+DEF PARSE_MESSAGE(RAW: STR) -> DICT[STR, ANY]:
+    TRY:
+        PAYLOAD = JSON.LOADS(RAW.STRIP())
+    EXCEPT JSON.JSONDECODEERROR AS EXC:
+        RAISE VALUEERROR(F"INVALID JSON: {EXC}")
+    RETURN PAYLOAD
+
+
+DEF VALIDATE_MESSAGE(PAYLOAD: DICT[STR, ANY], REQUIRED_FIELDS: LIST[STR]):
+    MISSING = [FIELD FOR FIELD IN REQUIRED_FIELDS IF FIELD NOT IN PAYLOAD]
+    IF MISSING:
+        RAISE VALUEERROR(F"MISSING FIELDS: {MISSING}")
+```
+```
+
+- [ ] **STEP 2: ADD TESTS FOR VALIDATION AND DELIMITER HANDLING**
+
+```python
+def test_parse_message_accepts_valid_json():
+    payload = parse_message('{"TASK": "HEARTBEAT"}\n')
+    assert payload["TASK"] == "HEARTBEAT"
+
+
+import pytest
+from src.protocol import validate_message
+
+
+def test_validate_message_fails_missing_fields():
+    with pytest.raises(ValueError, match="Missing fields"):
+        validate_message({"TASK": "HEARTBEAT"}, ["TASK", "SERVER_UUID"])
+```
+```
+
+### Task 3: Implement Worker lifecycle and task processing
+
+**Files:**
+- Modify: `src/worker.py`
+- Modify: `src/tasks.py`
+- Create: `tests/unit/test_worker.py`
+
+- [ ] **Step 1: Implement worker presentation and QUERY processing**
+
+```python
+FROM SRC.PROTOCOL IMPORT SEND_JSON, RECEIVE_JSON
+FROM SRC.LOGGING IMPORT CREATE_LOGGER
+IMPORT RANDOM
+IMPORT SOCKET
+IMPORT TIME
+IMPORT UUID
+
+LOGGER = CREATE_LOGGER('WORKER')
+WORKER_UUID = STR(UUID.UUID4())[:8].UPPER()
+
+
+DEF BUILD_PRESENTATION_PAYLOAD(ORIGINAL_MASTER: STR | NONE = NONE) -> DICT:
+    PAYLOAD = {"WORKER": "ALIVE", "WORKER_UUID": WORKER_UUID}
+    IF ORIGINAL_MASTER:
+        PAYLOAD["SERVER_UUID"] = ORIGINAL_MASTER
+    RETURN PAYLOAD
+
+
+DEF PROCESS_QUERY(MESSAGE: DICT) -> DICT:
+    TIME.SLEEP(RANDOM.UNIFORM(0.5, 1.5))
+    STATUS = "OK" IF RANDOM.RANDOM() < 0.9 ELSE "NOK"
+    RETURN {"STATUS": STATUS, "TASK": "QUERY", "WORKER_UUID": WORKER_UUID}
+```
+
+- [ ] **Step 2: Add Worker unit tests**
+
+```python
+FROM SRC.WORKER IMPORT BUILD_PRESENTATION_PAYLOAD, PROCESS_QUERY
+
+
+DEF TEST_BUILD_PRESENTATION_PAYLOAD_LOCAL():
+    PAYLOAD = BUILD_PRESENTATION_PAYLOAD()
+    ASSERT PAYLOAD["WORKER"] == "ALIVE"
+    ASSERT "SERVER_UUID" NOT IN PAYLOAD
+
+
+DEF TEST_PROCESS_QUERY_RETURNS_STATUS():
+    RESULT = PROCESS_QUERY({"TASK": "QUERY"})
+    ASSERT RESULT["TASK"] == "QUERY"
+    ASSERT RESULT["STATUS"] IN {"OK", "NOK"}
+```
+```
+
+### TASK 4: IMPLEMENT MASTER TASK QUEUE, ROUTING AND ACK HANDLING
+
+**FILES:**
+- MODIFY: `SRC/MASTER.PY`
+- MODIFY: `SRC/TASKS.PY`
+- CREATE: `TESTS/UNIT/TEST_TASKS.PY`
+- MODIFY: `TESTS/INTEGRATION/TEST_MASTER_WORKER.PY`
+
+- [ ] **STEP 1: IMPLEMENT `TASKQUEUE` AND `SIMULATE_LOAD_GENERATOR`**
+
+```python
+from collections import deque
+import threading
+import time
+import uuid
+
+class TaskQueue:
+    def __init__(self):
+        self._queue = deque()
+        self._lock = threading.Lock()
+
+    def enqueue(self, task: dict):
+        with self._lock:
+            self._queue.append(task)
+
+    def dequeue(self) -> dict | None:
+        with self._lock:
+            return self._queue.popleft() if self._queue else None
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+
+def simulate_load_generator(queue: TaskQueue):
+    users = ["Alice", "Bob", "Carlos", "Diana", "Eduardo"]
+    count = 0
+    while True:
+        time.sleep(1)
+        task = {"TASK": "QUERY", "USER": users[count % len(users)]}
+        queue.enqueue(task)
+        count += 1
+```
+
+- [ ] **STEP 2: IMPLEMENT TASK ROUTING IN `SRC/MASTER.PY`**
+
+```python
+from src.protocol import receive_json, send_json, validate_message
+from src.tasks import TaskQueue
+from src.logging import create_logger
+
+
+def process_worker_request(payload: dict, queue: TaskQueue) -> dict:
+    validate_message(payload, ["WORKER", "WORKER_UUID"])
+    if payload.get("WORKER", "").upper() != "ALIVE":
+        raise ValueError("Invalid worker status")
+    task = queue.dequeue()
+    if task:
+        return task
+    return {"TASK": "NO_TASK"}
+```
+
+- [ ] **STEP 3: ADD TESTS FOR QUEUE AND ROUTING**
+
+```python
+from src.tasks import TaskQueue
+
+
+def test_task_queue_enqueue_dequeue():
+    queue = TaskQueue()
+    queue.enqueue({"TASK": "QUERY", "USER": "Alice"})
+    assert queue.dequeue()["USER"] == "Alice"
+    assert queue.dequeue() is None
+```
+
+- [ ] **STEP 4: EXTEND INTEGRATION TEST TO VERIFY MASTER SENDS QUERY OR NO_TASK**
+
+```python
+# tests/integration/test_master_worker.py
+import socket
+import threading
+from src.master import start_master
+
+
+def test_master_returns_no_task_when_queue_empty():
+    thread = threading.Thread(target=start_master, args=('127.0.0.1', 9001), daemon=True)
+    thread.start()
+    sock = socket.create_connection(('127.0.0.1', 9001), timeout=5)
+    sock.sendall(b'{"WORKER": "ALIVE", "WORKER_UUID": "W-123"}\n')
+    data = sock.recv(4096).decode('utf-8')
+    assert 'NO_TASK' in data
+    sock.close()
+```
+```
+
+### Task 5: Implement Master-to-Master negotiation and dynamic redirection
+
+**Files:**
+- Modify: `src/p2p.py`
+- Modify: `src/master.py`
+- Modify: `tests/unit/test_p2p.py`
+- Modify: `tests/integration/test_master_worker.py`
+
+- [ ] **Step 1: Implement core P2P negotiation methods**
+
+```python
+IMPORT SOCKET
+IMPORT UUID
+FROM SRC.PROTOCOL IMPORT SEND_JSON, RECEIVE_JSON
+FROM SRC.TASKS IMPORT TASKQUEUE
+
+
+DEF REQUEST_HELP(PEER_HOST: STR, PEER_PORT: INT, CURRENT_LOAD: INT, WORKERS_NEEDED: INT) -> DICT:
+    S = SOCKET.SOCKET(SOCKET.AF_INET, SOCKET.SOCK_STREAM)
+    S.SETTIMEOUT(3)
+    S.CONNECT((PEER_HOST, PEER_PORT))
+    PAYLOAD = {
+        "TYPE": "REQUEST_HELP",
+        "REQUEST_ID": STR(UUID.UUID4()),
+        "PAYLOAD": {
+            "CURRENT_LOAD": CURRENT_LOAD,
+            "WORKERS_NEEDED": WORKERS_NEEDED
+        }
+    }
+    SEND_JSON(S, PAYLOAD)
+    RESPONSE = RECEIVE_JSON(S)
+    S.CLOSE()
+    RETURN RESPONSE
+```
+
+- [ ] **Step 2: Add P2P tests**
+
+```python
+IMPORT SOCKET
+IMPORT THREADING
+FROM SRC.P2P IMPORT REQUEST_HELP
+
+
+DEF TEST_REQUEST_HELP_RETURNS_RESPONSE():
+    DEF FAKE_PEER(SERVER_SOCK):
+        CONN, _ = SERVER_SOCK.ACCEPT()
+        DATA = CONN.RECV(4096).DECODE('UTF-8')
+        ASSERT 'REQUEST_HELP' IN DATA
+        CONN.SENDALL(B'{"TYPE": "RESPONSE_ACCEPTED", "REQUEST_ID": "TEST-ID", "PAYLOAD": {"WORKERS_OFFERED": 2}}\N')
+        CONN.CLOSE()
+
+    SERVER_SOCK = SOCKET.SOCKET(SOCKET.AF_INET, SOCKET.SOCK_STREAM)
+    SERVER_SOCK.BIND(('127.0.0.1', 9100))
+    SERVER_SOCK.LISTEN(1)
+    THREAD = THREADING.THREAD(TARGET=FAKE_PEER, ARGS=(SERVER_SOCK,), DAEMON=TRUE)
+    THREAD.START()
+
+    RESPONSE = REQUEST_HELP('127.0.0.1', 9100, CURRENT_LOAD=12, WORKERS_NEEDED=2)
+    ASSERT RESPONSE['TYPE'] == 'RESPONSE_ACCEPTED'
+    ASSERT RESPONSE['PAYLOAD']['WORKERS_OFFERED'] == 2
+
+    SERVER_SOCK.CLOSE()
+```
+```
+
+- [ ] **STEP 3: INTEGRATE NEGOTIATION WITH MASTER LOAD MONITOR**
+
+```python
+from src.tasks import TaskQueue
+from src.p2p import request_help
+import time
+
+
+def start_p2p_monitor(queue: TaskQueue, peer_host: str, peer_port: int, stop_event):
+    while not stop_event.is_set():
+        time.sleep(5)
+        if queue.size() >= 10:
+            response = request_help(peer_host, peer_port, queue.size(), 2)
+            if response.get('TYPE') == 'RESPONSE_ACCEPTED':
+                offered = response.get('PAYLOAD', {}).get('WORKERS_OFFERED', 0)
+                pending_redirects = offered
+                print(f"Peer accepted help: {offered} workers")
+```
+```
+
+- [ ] **Step 4: Add integration test for P2P command handling**
+
+```python
+IMPORT SOCKET
+IMPORT THREADING
+IMPORT TIME
+FROM THREADING IMPORT EVENT
+FROM SRC.TASKS IMPORT TASKQUEUE
+FROM SRC.P2P IMPORT START_P2P_MONITOR
+
+
+DEF TEST_MASTER_CAN_SEND_REQUEST_HELP():
+    DEF FAKE_PEER(SERVER_SOCK):
+        CONN, _ = SERVER_SOCK.ACCEPT()
+        DATA = CONN.RECV(4096).DECODE('UTF-8')
+        ASSERT 'REQUEST_HELP' IN DATA
+        CONN.SENDALL(B'{"TYPE": "RESPONSE_ACCEPTED", "REQUEST_ID": "TEST-ID", "PAYLOAD": {"WORKERS_OFFERED": 2}}\N')
+        CONN.CLOSE()
+
+    SERVER_SOCK = SOCKET.SOCKET(SOCKET.AF_INET, SOCKET.SOCK_STREAM)
+    SERVER_SOCK.BIND(('127.0.0.1', 9101))
+    SERVER_SOCK.LISTEN(1)
+    THREAD_PEER = THREADING.THREAD(TARGET=FAKE_PEER, ARGS=(SERVER_SOCK,), DAEMON=TRUE)
+    THREAD_PEER.START()
+
+    QUEUE = TASKQUEUE()
+    FOR _ IN RANGE(10):
+        QUEUE.ENQUEUE({"TASK": "QUERY", "USER": "TEST"})
+
+    STOP_EVENT = EVENT()
+    MONITOR_THREAD = THREADING.THREAD(
+        TARGET=START_P2P_MONITOR,
+        ARGS=(QUEUE, '127.0.0.1', 9101, STOP_EVENT),
+        DAEMON=TRUE,
+    )
+    MONITOR_THREAD.START()
+
+    TIME.SLEEP(1)
+    STOP_EVENT.SET()
+    MONITOR_THREAD.JOIN(TIMEOUT=2)
+
+    ASSERT NOT MONITOR_THREAD.IS_ALIVE()
+    SERVER_SOCK.CLOSE()
+```
+```
+
+### TASK 6: UPDATE README AND DOCS TO REFLECT ARCHITECTURE
+
+**FILES:**
+- MODIFY: `README.MD`
+- MODIFY: `DOCS/ARCHITECTURE.MD`
+
+- [ ] **STEP 1: ADD ARCHITECTURE SECTION TO README**
+
+```markdown
+## Arquitetura
+
+O projeto usa uma estrutura modular com `src/` para a lógica principal e `server.py`/`client.py` como entradas executáveis. O Master gerencia filas e negocia com Masters vizinhos, enquanto o Worker se apresenta, processa queries e responde com status.
+```
+
+- [ ] **STEP 2: CREATE `DOCS/ARCHITECTURE.MD`**
+
+```markdown
+# Arquitetura do Projeto
+
+## Componentes
+- `src/protocol.py`: parsing e validação JSON com delimitador `\n`
+- `src/tasks.py`: filas de tarefa e simulação de carga
+- `src/master.py`: servidor Master e rotina de atendimento
+- `src/worker.py`: ciclo Worker — heartbeat, apresentação, processamento, status
+- `src/p2p.py`: negociação Master-to-Master e redirecionamento
+- `src/logging.py`: logger compartilhado e arquivos de log
+```
+```
+
+### Plan Self-Review
+
+- [ ] Confirm each task maps to a sprint requirement do documento do projeto
+- [ ] Remove any placeholder tests and replace with real socket or unit assertions
+- [ ] Ensure root `server.py` and `client.py` remain executable wrappers
+- [ ] Validate all file paths and code snippets are consistent
