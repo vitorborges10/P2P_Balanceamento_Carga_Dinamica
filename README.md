@@ -10,7 +10,7 @@
 - Rafael Furtado Guimarães Estevão
   - RA: 22305974
   - GitHub: Kayarf
-
+- Ryan Ribeiro
 ## 📌 Status
 Projeto em desenvolvimento — **Sprint 3 concluída**
 
