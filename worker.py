@@ -4,8 +4,8 @@ import time
 import random
 import uuid
 
-ORIGINAL_MASTER_IP   = '192.168.15.6'
-ORIGINAL_MASTER_PORT = 8001
+ORIGINAL_MASTER_IP   = '10.62.216.214'
+ORIGINAL_MASTER_PORT = 8000          # porta local (8000 na aula)
 ORIGINAL_MASTER_ADDR = f"{ORIGINAL_MASTER_IP}:{ORIGINAL_MASTER_PORT}"
 
 MASTER_IP   = ORIGINAL_MASTER_IP
@@ -13,12 +13,15 @@ MASTER_PORT = ORIGINAL_MASTER_PORT
 
 WORKER_UUID = str(uuid.uuid4())[:8].upper()
 
-SERVER_UUID_ORIGINAL = None
+SERVER_UUID_ORIGINAL = None   # preenchido quando emprestado
 
 HEARTBEAT_INTERVAL = 10
-TASK_POLL_INTERVAL = 1
+TASK_POLL_INTERVAL = 0.1
 
 
+# ─────────────────────────────────────────────
+#  UTILITÁRIOS DE SOCKET
+# ─────────────────────────────────────────────
 def conectar() -> socket.socket:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(5)
@@ -43,6 +46,10 @@ def receber_json(sock: socket.socket) -> dict:
             linha = buffer.split("\n")[0]
             return json.loads(linha.strip())
 
+
+# ─────────────────────────────────────────────
+#  HEARTBEAT
+# ─────────────────────────────────────────────
 def ciclo_heartbeat():
     """
     Verifica se o master atual está ativo.
@@ -66,10 +73,13 @@ def ciclo_heartbeat():
     except Exception as e:
         print(f"[HEARTBEAT] OFFLINE - {e}")
 
+
+# ─────────────────────────────────────────────
+#  REGISTRO TEMPORÁRIO (Sprint 3)
+# ─────────────────────────────────────────────
 def registrar_temporario():
     """
     Após command_redirect: conecta no novo master e envia register_temporary_worker.
-    Chaves em minúsculo conforme spec do professor.
     """
     try:
         s = conectar()
@@ -90,11 +100,13 @@ def registrar_temporario():
         print(f"[ERRO P2P] Falha ao registrar no master temporário: {e}")
 
 
+# ─────────────────────────────────────────────
+#  PAYLOAD DE APRESENTAÇÃO (Sprint 2 / 3)
+# ─────────────────────────────────────────────
 def montar_apresentacao() -> dict:
     """
-    Sprint 2 — payload de apresentação:
-      Local     : {"WORKER": "ALIVE", "WORKER_UUID": "..."}
-      Emprestado: {"WORKER": "ALIVE", "WORKER_UUID": "...", "SERVER_UUID": "<origem>"}
+    Local     : {"WORKER": "ALIVE", "WORKER_UUID": "..."}
+    Emprestado: {"WORKER": "ALIVE", "WORKER_UUID": "...", "SERVER_UUID": "<origem>"}
     """
     payload = {"WORKER": "ALIVE", "WORKER_UUID": WORKER_UUID}
     if SERVER_UUID_ORIGINAL:
@@ -102,6 +114,9 @@ def montar_apresentacao() -> dict:
     return payload
 
 
+# ─────────────────────────────────────────────
+#  CICLO DE TAREFA
+# ─────────────────────────────────────────────
 def ciclo_tarefa():
     global MASTER_IP, MASTER_PORT, SERVER_UUID_ORIGINAL
 
@@ -110,16 +125,14 @@ def ciclo_tarefa():
         enviar_json(s, montar_apresentacao())
         resposta_master = receber_json(s)
 
-        
         msg_type  = resposta_master.get("type") or resposta_master.get("TYPE")
         task_raw  = resposta_master.get("TASK") or resposta_master.get("task") or ""
         task_type = str(task_raw).upper()
 
-        
+        # ── Mensagens M2M que chegam ao worker ────────────────────────────
         if msg_type is not None:
             msg_type_lower = str(msg_type).lower()
 
-            
             req_id  = resposta_master.get("request_id") or resposta_master.get("REQUEST_ID")
             payload = resposta_master.get("payload")    or resposta_master.get("PAYLOAD")
 
@@ -128,7 +141,7 @@ def ciclo_tarefa():
                 s.close()
                 return
 
-            
+            # command_redirect
             if msg_type_lower == "command_redirect":
                 s.close()
                 novo_endereco = payload.get("new_master_address") or payload.get("NEW_MASTER_ADDRESS")
@@ -142,7 +155,7 @@ def ciclo_tarefa():
                     print("[ERRO P2P] command_redirect sem new_master_address. Ignorado.")
                 return
 
-            
+            # command_release
             if msg_type_lower == "command_release":
                 s.close()
                 release_addr = payload.get("original_master_address") or payload.get("ORIGINAL_MASTER_ADDRESS")
@@ -165,13 +178,11 @@ def ciclo_tarefa():
                 print(f"[P2P] Reconectando ao master original em {MASTER_IP}:{MASTER_PORT}")
                 return
 
-            
             print(f"[PROTOCOLO] TYPE desconhecido: '{msg_type}'. Ignorado.")
             s.close()
             return
 
-        
-
+        # ── Protocolo de tarefa (Sprint 2) ────────────────────────────────
         if task_type == "NO_TASK":
             s.close()
             time.sleep(TASK_POLL_INTERVAL)
@@ -179,7 +190,7 @@ def ciclo_tarefa():
 
         if task_type == "QUERY":
             user = resposta_master.get("USER") or resposta_master.get("user") or "?"
-            time.sleep(random.uniform(0.5, 1.5))   
+            time.sleep(random.uniform(0.5, 1.5))   # simula processamento
             status = "OK" if random.random() < 0.9 else "NOK"
             reporte = {
                 "STATUS":      status,
@@ -199,8 +210,8 @@ def ciclo_tarefa():
         s.close()
 
     except (ConnectionRefusedError, socket.timeout, OSError) as e:
-        
         print(f"[ERRO] Falha ao conectar com master atual ({MASTER_IP}:{MASTER_PORT}): {e}")
+        # CT08 — master temporário perdido: voltar ao original
         if SERVER_UUID_ORIGINAL:
             print(f"[CT08] Master temporário perdido. Tentando retornar ao master de origem {ORIGINAL_MASTER_ADDR}...")
             MASTER_IP   = ORIGINAL_MASTER_IP
@@ -211,6 +222,10 @@ def ciclo_tarefa():
         print(f"[ERRO] Falha no ciclo de tarefa: {e}")
         time.sleep(TASK_POLL_INTERVAL)
 
+
+# ─────────────────────────────────────────────
+#  MAIN
+# ─────────────────────────────────────────────
 def main():
     print(f"=== WORKER {WORKER_UUID} INICIADO ===")
     print(f"    Master inicial : {MASTER_IP}:{MASTER_PORT}")
