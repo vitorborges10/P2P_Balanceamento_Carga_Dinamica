@@ -39,6 +39,8 @@ redirecionamentos_pendentes: int  = 0
 pedidos_em_andamento:        dict = {}
 fila_destinos_redirect:      deque = deque()
 
+workers_ativos:              set  = set()   # UUIDs de workers com conexão aberta agora
+
 
 tasks_lock          = threading.Lock()
 tasks_running_list: list = [] 
@@ -46,6 +48,38 @@ tasks_completed     = 0
 tasks_failed        = 0
 
 START_TIME = time.time()
+
+_cpu_cache_lock = threading.Lock()
+_cpu_cache_val  = 0.0   # atualizado por thread separada a cada 5s
+
+def _cpu_sampler():
+    """Atualiza o cache de CPU a cada 5s em background (interval=1 bloqueia 1s, mas em thread própria)."""
+    global _cpu_cache_val
+    while True:
+        val = psutil.cpu_percent(interval=1)
+        with _cpu_cache_lock:
+            _cpu_cache_val = val
+        time.sleep(4)
+
+_peer_cache_lock   = threading.Lock()
+_peer_cache_status = "unavailable"
+_peer_cache_time   = ""
+
+def _peer_sampler():
+    """Verifica disponibilidade do peer a cada 10s em background — nunca bloqueia a coleta de métricas."""
+    global _peer_cache_status, _peer_cache_time
+    while True:
+        try:
+            s = socket.create_connection((PEER_HOST, PEER_PORT), timeout=2)
+            s.close()
+            status = "available"
+        except Exception:
+            status = "unavailable"
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with _peer_cache_lock:
+            _peer_cache_status = status
+            _peer_cache_time   = ts
+        time.sleep(10)
 
 peer_server_uuid = f"peer_{PEER_HOST}"
 peer_uuid_lock   = threading.Lock()
@@ -85,7 +119,8 @@ def _coletar_metricas() -> dict:
     agora_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     uptime    = int(time.time() - START_TIME)
 
-    cpu_pct          = psutil.cpu_percent(interval=1)
+    with _cpu_cache_lock:
+        cpu_pct = _cpu_cache_val
     load1, load5, _  = psutil.getloadavg()
     mem              = psutil.virtual_memory()
     disk             = psutil.disk_usage('/')
@@ -100,21 +135,23 @@ def _coletar_metricas() -> dict:
             oldest_age_s    = int(time.time() - oldest_enqueued)
 
     with state_lock:
-        emp_recebidos = dict(workers_emprestados)       
-        emp_enviados  = dict(meus_workers_emprestados)  
+        emp_recebidos = dict(workers_emprestados)
+        emp_enviados  = dict(meus_workers_emprestados)
         n_received    = len(emp_recebidos)
         n_borrowed    = len(emp_enviados)
+        n_ativos      = len(workers_ativos)          # workers com conexão aberta agora
 
     with tasks_lock:
         tc = tasks_completed
         tf = tasks_failed
         tr = len(tasks_running_list)
 
-    total_native     = 5
-    total_registered = total_native + n_received
-    workers_home     = total_native - n_borrowed          
-    workers_alive    = total_registered                   
-    workers_idle     = max(0, total_registered - tr)
+    # workers nativos = ativos agora menos os emprestados recebidos (que são externos)
+    total_native     = max(0, n_ativos - n_received)
+    total_registered = n_ativos                      # total real com conexão viva
+    workers_home     = max(0, total_native - n_borrowed)
+    workers_alive    = n_ativos
+    workers_idle     = max(0, n_ativos - tr)
 
     with peer_uuid_lock:
         p_uuid = peer_server_uuid
@@ -124,14 +161,9 @@ def _coletar_metricas() -> dict:
         + [{"direction": "in",  "peer_uuid": p_uuid} for _ in emp_recebidos]
     )
 
-    try:
-        test_s = socket.create_connection((PEER_HOST, PEER_PORT), timeout=2)
-        test_s.close()
-        neighbor_status  = "available"
-        neighbor_hb_time = agora_iso
-    except Exception:
-        neighbor_status  = "unavailable"
-        neighbor_hb_time = agora_iso
+    with _peer_cache_lock:
+        neighbor_status  = _peer_cache_status
+        neighbor_hb_time = _peer_cache_time or agora_iso
 
     return {
         "server_uuid":     SERVER_UUID,
@@ -203,18 +235,18 @@ def _coletar_metricas() -> dict:
 
 def _enviar_supervisor(payload: dict):
     """
-    Abre conexao TLS sobre TCP, envia JSON e fecha sem \n e sem recv.
-    Logica identica ao supervisor.py de referencia que funciona com nuted-ia.dev.
+    Abre conexao TLS sobre TCP, envia JSON e fecha.
+    O supervisor nao retorna resposta — apenas envia e fecha.
     """
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    sock = socket.create_connection((SUPERVISOR_HOST, SUPERVISOR_PORT), timeout=10)
+    raw_sock = socket.create_connection((SUPERVISOR_HOST, SUPERVISOR_PORT), timeout=10)
+    ctx = ssl.create_default_context()
+    tls_sock = ctx.wrap_socket(raw_sock, server_hostname=SUPERVISOR_SNI)
     try:
-        ctx = ssl.create_default_context()
-        sock = ctx.wrap_socket(sock, server_hostname=SUPERVISOR_SNI)
-        sock.sendall(data)
+        tls_sock.sendall(data)
     finally:
         try:
-            sock.close()
+            tls_sock.close()
         except OSError:
             pass
 
@@ -530,6 +562,8 @@ def tratar_cliente(conn: socket.socket, addr):
                 server_uuid_orig = (payload.get("SERVER_UUID") or
                                     payload.get("server_uuid"))
                 worker_uuid_sessao = worker_uuid
+                with state_lock:
+                    workers_ativos.add(worker_uuid)
 
                 if not server_uuid_orig:
                     with state_lock:
@@ -657,9 +691,13 @@ def tratar_cliente(conn: socket.socket, addr):
                     t for t in tasks_running_list
                     if t.get("worker_uuid") != worker_uuid_sessao
                 ]
+            with state_lock:
+                workers_ativos.discard(worker_uuid_sessao)
         conn.close()
 
 def iniciar_master():
+    threading.Thread(target=_cpu_sampler,       daemon=True).start()
+    threading.Thread(target=_peer_sampler,      daemon=True).start()
     threading.Thread(target=gerador_de_tarefas, daemon=True).start()
     threading.Thread(target=monitorar_carga,    daemon=True).start()
     threading.Thread(target=loop_supervisor,    daemon=True).start()
