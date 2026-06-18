@@ -8,14 +8,14 @@ import psutil
 import os
 from collections import deque
 
-HOST        = '192.168.15.6'
-PORT        = 8000          
+HOST        = '10.62.217.214'
+PORT        = 8001          
 SERVER_UUID = "master_8"
 HOSTNAME    = "master_8.A.local"
 MASTER_ID   = "8"
 
-PEER_HOST = '192.168.15.19'
-PEER_PORT = 8001            
+PEER_HOST = '10.62.217.30'
+PEER_PORT = 8000          
 
 SATURATION_THRESHOLD = 100   
 RELEASE_THRESHOLD    = 4    
@@ -24,7 +24,7 @@ SUPERVISOR_HOST     = "nuted-ia.dev"
 SUPERVISOR_PORT     = 443
 SUPERVISOR_TLS      = True
 SUPERVISOR_SNI      = "nuted-ia.dev"
-SUPERVISOR_INTERVAL = 10   
+SUPERVISOR_INTERVAL = 15   
 
 fila_lock  = threading.Lock()
 fila_tarefas: deque = deque()
@@ -39,7 +39,9 @@ redirecionamentos_pendentes: int  = 0
 pedidos_em_andamento:        dict = {}
 fila_destinos_redirect:      deque = deque()
 
-workers_ativos:              set  = set()   # UUIDs de workers com conexão aberta agora
+workers_ativos:              set  = set()   # workers com conexão TCP ativa agora
+workers_registrados:         dict = {}      # todos os workers já vistos {uuid: {"last_seen", "borrowed"}}
+
 
 
 tasks_lock          = threading.Lock()
@@ -50,10 +52,10 @@ tasks_failed        = 0
 START_TIME = time.time()
 
 _cpu_cache_lock = threading.Lock()
-_cpu_cache_val  = 0.0   # atualizado por thread separada a cada 5s
+_cpu_cache_val  = 0.0
 
 def _cpu_sampler():
-    """Atualiza o cache de CPU a cada 5s em background (interval=1 bloqueia 1s, mas em thread própria)."""
+    
     global _cpu_cache_val
     while True:
         val = psutil.cpu_percent(interval=1)
@@ -66,7 +68,7 @@ _peer_cache_status = "unavailable"
 _peer_cache_time   = ""
 
 def _peer_sampler():
-    """Verifica disponibilidade do peer a cada 10s em background — nunca bloqueia a coleta de métricas."""
+    
     global _peer_cache_status, _peer_cache_time
     while True:
         try:
@@ -115,7 +117,7 @@ def ler_linha(conn: socket.socket, buffer_state: list) -> dict:
 
 
 def _coletar_metricas() -> dict:
-    """Monta o payload completo conforme spec Sprint 4."""
+    
     agora_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     uptime    = int(time.time() - START_TIME)
 
@@ -135,31 +137,51 @@ def _coletar_metricas() -> dict:
             oldest_age_s    = int(time.time() - oldest_enqueued)
 
     with state_lock:
-        emp_recebidos = dict(workers_emprestados)
-        emp_enviados  = dict(meus_workers_emprestados)
+        emp_recebidos = dict(workers_emprestados)       # workers que vieram de outros masters (recebidos)
+        emp_enviados  = dict(meus_workers_emprestados)  # workers nossos emprestados a outros masters
         n_received    = len(emp_recebidos)
         n_borrowed    = len(emp_enviados)
-        n_ativos      = len(workers_ativos)          # workers com conexão aberta agora
+        n_ativos      = len(workers_ativos)             # conectados agora
+        n_registrados = len(workers_registrados)        # todos conhecidos (persiste entre conexões)
+        # workers_alive = registrados que fizeram heartbeat nos últimos 60s
+        agora_ts = time.time()
+        workers_alive_count = sum(
+            1 for info in workers_registrados.values()
+            if agora_ts - info.get("last_seen", 0) < 60
+        )
 
     with tasks_lock:
         tc = tasks_completed
         tf = tasks_failed
         tr = len(tasks_running_list)
 
-    # workers nativos = ativos agora menos os emprestados recebidos (que são externos)
-    total_native     = max(0, n_ativos - n_received)
-    total_registered = n_ativos                      # total real com conexão viva
-    workers_home     = max(0, total_native - n_borrowed)
-    workers_alive    = n_ativos
-    workers_idle     = max(0, n_ativos - tr)
-
     with peer_uuid_lock:
         p_uuid = peer_server_uuid
 
-    borrowed_list = (
-        [{"direction": "out", "peer_uuid": p_uuid} for _ in emp_enviados]
-        + [{"direction": "in",  "peer_uuid": p_uuid} for _ in emp_recebidos]
-    )
+    # workers_home = workers nativos que estão localmente (não foram emprestados a ninguém)
+    # workers nativos = todos os registrados MENOS os recebidos de outros masters
+    total_native     = max(0, n_registrados - n_received)
+    total_registered = n_registrados
+    workers_home     = max(0, total_native - n_borrowed)
+    workers_alive    = workers_alive_count
+    workers_idle     = max(0, n_ativos - tr)
+
+    # borrowed_list: "out" = nosso worker foi para outro master (workers_borrowed)
+    #                "in"  = recebemos worker de outro master (workers_received)
+    # Usa o peer_uuid real de cada worker quando disponível
+    def _resolve_peer_uuid(addr_or_uuid: str, fallback: str) -> str:
+        # Se contém ponto (IPv4) ou é "ip:port", usa fallback (peer_uuid global)
+        if not addr_or_uuid or "." in addr_or_uuid:
+            return fallback
+        return addr_or_uuid
+
+    borrowed_list = []
+    for w_id, destino_addr in emp_enviados.items():
+        borrowed_list.append({"direction": "out",
+                               "peer_uuid": _resolve_peer_uuid(str(destino_addr), p_uuid)})
+    for w_id, origem_addr in emp_recebidos.items():
+        borrowed_list.append({"direction": "in",
+                               "peer_uuid": _resolve_peer_uuid(str(origem_addr), p_uuid)})
 
     with _peer_cache_lock:
         neighbor_status  = _peer_cache_status
@@ -234,10 +256,7 @@ def _coletar_metricas() -> dict:
 
 
 def _enviar_supervisor(payload: dict):
-    """
-    Abre conexao TLS sobre TCP, envia JSON e fecha.
-    O supervisor nao retorna resposta — apenas envia e fecha.
-    """
+    
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     raw_sock = socket.create_connection((SUPERVISOR_HOST, SUPERVISOR_PORT), timeout=10)
     ctx = ssl.create_default_context()
@@ -252,7 +271,7 @@ def _enviar_supervisor(payload: dict):
 
 
 def _disparar_envio():
-    """Coleta e envia métricas em background — nunca bloqueia o loop principal."""
+    
     try:
         payload = _coletar_metricas()
         _enviar_supervisor(payload)
@@ -266,15 +285,10 @@ def _disparar_envio():
 
 
 def loop_supervisor():
-    """
-    Envia imediatamente ao iniciar, depois a cada SUPERVISOR_INTERVAL (10s).
-    Cada envio ocorre em thread própria: se a conexão TLS travar ou falhar,
-    o próximo ciclo de 10s não é atrasado e o nó não fica DOWN no dashboard.
-    """
+    
     log(f"[SUPERVISOR] Loop iniciado — envio a cada {SUPERVISOR_INTERVAL}s "
         f"para {SUPERVISOR_HOST}:{SUPERVISOR_PORT} (TLS)")
 
-    # Primeiro envio imediato — evita ficar DOWN nos primeiros 10s
     threading.Thread(target=_disparar_envio, daemon=True).start()
 
     ultimo = time.time()
@@ -294,7 +308,7 @@ def gerador_de_tarefas():
             fila_tarefas.append({
                 "TASK":          "QUERY",
                 "USER":          user,
-                "_enqueued_at":  time.time()   # para calcular oldest_task_age_s
+                "_enqueued_at":  time.time()  
             })
         if contador % 5 == 0:
             with fila_lock:
@@ -332,7 +346,7 @@ def _solicitar_ajuda(carga_atual: int):
     global redirecionamentos_pendentes
 
     req_id         = new_request_id()
-    workers_needed = 2
+    workers_needed = 1
 
     msg = {
         "type":       "request_help",
@@ -396,7 +410,7 @@ def _solicitar_ajuda(carga_atual: int):
         log(f"[M2M ERRO] Falha ao contactar peer {PEER_HOST}:{PEER_PORT}: {e}")
 
 def _enviar_notify_worker_returned(worker_id: str, origem_addr: str):
-    """Notifica o master de origem que o worker foi liberado (notify_worker_returned)."""
+    
     try:
         ip, port_str = origem_addr.split(":")
         port = int(port_str)
@@ -422,13 +436,7 @@ def _enviar_notify_worker_returned(worker_id: str, origem_addr: str):
 
 
 def tratar_cliente(conn: socket.socket, addr):
-    """
-    Trata uma conexão persistente. Origens possíveis:
-      - Worker próprio ou emprestado (campo WORKER ou TASK=HEARTBEAT)
-      - Master vizinho (campo 'type', protocolo M2M)
-    Aceita chaves em maiúsculo ou minúsculo para interoperabilidade (O6).
-    Campos desconhecidos são ignorados (strict parsing — nota 1 do plano).
-    """
+   
     global redirecionamentos_pendentes, peer_server_uuid
 
     worker_uuid_sessao = None
@@ -509,6 +517,7 @@ def tratar_cliente(conn: socket.socket, addr):
                     w_id   = p.get("worker_id") or p.get("WORKER_ID") or "UNK"
                     with state_lock:
                         meus_workers_emprestados.pop(w_id, None)
+                        workers_registrados.pop(w_id, None)   # remove worker devolvido da contagem
                     log(f"[M2M] notify_worker_returned. "
                         f"Worker '{w_id}' devolvido ao nosso pool. (request_id={req_id})")
                     continue
@@ -530,6 +539,17 @@ def tratar_cliente(conn: socket.socket, addr):
 
                     with state_lock:
                         workers_emprestados[w_id] = origem_addr
+                        workers_ativos.add(w_id)
+                        workers_registrados[w_id] = {
+                            "last_seen": time.time(),
+                            "borrowed":  True
+                        }
+
+                    # Atualiza peer_server_uuid se a origem parece ser um UUID (não ip:port)
+                    if origem_addr and "." not in origem_addr and ":" not in origem_addr:
+                        with peer_uuid_lock:
+                            peer_server_uuid = origem_addr
+
                     worker_uuid_sessao = w_id
 
                     enviar_linha(conn, {"STATUS": "ACK", "WORKER_UUID": w_id})
@@ -543,7 +563,6 @@ def tratar_cliente(conn: socket.socket, addr):
             task_raw = payload.get("TASK") or payload.get("task") or ""
             task_val = str(task_raw).upper()
 
-            # HEARTBEAT (Sprint 1)
             if task_val == "HEARTBEAT":
                 worker_uuid_hb = (payload.get("WORKER_UUID") or
                                   payload.get("worker_uuid") or "?")
@@ -564,6 +583,18 @@ def tratar_cliente(conn: socket.socket, addr):
                 worker_uuid_sessao = worker_uuid
                 with state_lock:
                     workers_ativos.add(worker_uuid)
+                    workers_registrados[worker_uuid] = {
+                        "last_seen": time.time(),
+                        "borrowed":  bool(server_uuid_orig)
+                    }
+
+                # Atualiza o UUID do peer quando um worker emprestado se apresenta
+                if server_uuid_orig:
+                    with peer_uuid_lock:
+                        peer_server_uuid = server_uuid_orig
+                    with state_lock:
+                        if worker_uuid not in workers_emprestados:
+                            workers_emprestados[worker_uuid] = server_uuid_orig
 
                 if not server_uuid_orig:
                     with state_lock:
@@ -693,6 +724,11 @@ def tratar_cliente(conn: socket.socket, addr):
                 ]
             with state_lock:
                 workers_ativos.discard(worker_uuid_sessao)
+                # Atualiza last_seen mas NÃO remove de workers_registrados —
+                # o worker vai reconectar no próximo ciclo e continua na contagem.
+                # Só remove se foi explicitamente liberado (command_release/notify_worker_returned).
+                if worker_uuid_sessao in workers_registrados:
+                    workers_registrados[worker_uuid_sessao]["last_seen"] = time.time()
         conn.close()
 
 def iniciar_master():
