@@ -19,7 +19,7 @@
 | Sprint 1 | Heartbeat (Worker ↔ Master) | ✅ Completa | - |
 | Sprint 2 | Ciclo de tarefas (ALIVE, QUERY, ACK) | ✅ Completa | - |
 | Sprint 3 | Protocolo M2M e redirecionamento dinâmico | ✅ Completa | - |
-| **Sprint 4** | **Supervisor e monitoramento (Apresentação Final)** | 🔄 ✅ Completa | **15/06/2026** |
+| **Sprint 4** | **Supervisor e monitoramento (Apresentação Final)** | ✅ Completa | **15/06/2026** |
 
 **Atual:** Implementando coleta de métricas e integração com Supervisor (nuted-ia.dev)
 
